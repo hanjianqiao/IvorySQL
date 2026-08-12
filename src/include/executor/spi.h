@@ -199,6 +199,9 @@ extern void SPI_commit(void);
 extern void SPI_commit_and_chain(void);
 extern void SPI_rollback(void);
 extern void SPI_rollback_and_chain(void);
+extern void SPI_savepoint(const char *name);
+extern void SPI_release_savepoint(const char *name);
+extern void SPI_rollback_to_savepoint(const char *name);
 
 extern void AtEOXact_SPI(bool isCommit);
 extern void AtEOSubXact_SPI(bool isCommit, SubTransactionId mySubid);

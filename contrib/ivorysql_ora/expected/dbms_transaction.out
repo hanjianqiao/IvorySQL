@@ -1,0 +1,246 @@
+--
+-- dbms_transaction.sql
+--
+-- tests for DBMS_TRANSACTION:
+--   COMMIT / ROLLBACK, SAVEPOINT / ROLLBACK_SAVEPOINT,
+--   READ_ONLY / READ_WRITE, ISOLATION_LEVEL, LOCAL_TRANSACTION_ID,
+--   legacy no-ops, and the documented-unsupported distributed
+--   transaction recovery subprograms.
+--
+create table dbms_tx_t (id int, val varchar2(100));
+--
+-- COMMIT / ROLLBACK: valid only when the package procedure is invoked as a
+-- top-level CALL (non-atomic context) -- same restriction as a bare
+-- COMMIT/ROLLBACK statement inside a PL/iSQL procedure.
+-- AUTOCOMMIT is default ON in PG
+--
+insert into dbms_tx_t values (1, 'committed');
+call dbms_transaction.commit();
+select * from dbms_tx_t order by id;
+ id |    val    
+----+-----------
+  1 | committed
+(1 row)
+
+insert into dbms_tx_t values (2, 'rolled back');
+call dbms_transaction.rollback();
+select * from dbms_tx_t order by id;
+ id |     val     
+----+-------------
+  1 | committed
+  2 | rolled back
+(2 rows)
+
+BEGIN
+    insert into dbms_tx_t values (3, 'committed');
+    dbms_transaction.commit();
+    insert into dbms_tx_t values (4, 'rolled back');
+    dbms_transaction.rollback();
+END;
+/
+select * from dbms_tx_t order by id;
+ id |     val     
+----+-------------
+  1 | committed
+  2 | rolled back
+  3 | committed
+(3 rows)
+
+--
+-- SAVEPOINT / ROLLBACK_SAVEPOINT: unlike COMMIT/ROLLBACK, these require an
+-- explicit transaction block, same as a bare SQL SAVEPOINT statement.
+--
+call dbms_transaction.savepoint('sp_outside');
+ERROR:  SAVEPOINT can only be used in transaction blocks
+CONTEXT:  SQL statement "SELECT sys.ora_dbms_transaction_savepoint(sp)"
+PL/iSQL function savepoint line 13 at PERFORM
+-- PG starts transactions explicitly while Oracle starts transactions implicityly
+BEGIN;
+    insert into dbms_tx_t values (5, 'before sp1');
+    call dbms_transaction.savepoint('sp1');
+    insert into dbms_tx_t values (6, 'after sp1, will be rolled back');
+    call dbms_transaction.rollback_savepoint('sp1');
+    insert into dbms_tx_t values (7, 'after rollback to sp1');
+COMMIT;
+select * from dbms_tx_t order by id;
+ id |          val          
+----+-----------------------
+  1 | committed
+  2 | rolled back
+  3 | committed
+  5 | before sp1
+  7 | after rollback to sp1
+(5 rows)
+
+-- nested savepoints: rolling back to the outer one undoes both
+BEGIN;
+    call dbms_transaction.savepoint('a');
+    insert into dbms_tx_t values (8, 'a');
+    call dbms_transaction.savepoint('b');
+    insert into dbms_tx_t values (9, 'b');
+    call dbms_transaction.rollback_savepoint('a');
+    insert into dbms_tx_t values (10, 'after rollback to a');
+COMMIT;
+select * from dbms_tx_t order by id;
+ id |          val          
+----+-----------------------
+  1 | committed
+  2 | rolled back
+  3 | committed
+  5 | before sp1
+  7 | after rollback to sp1
+ 10 | after rollback to a
+(6 rows)
+
+-- rollback to a savepoint that does not exist
+BEGIN;
+    call dbms_transaction.savepoint('a');
+    insert into dbms_tx_t values (8, 'a');
+    call dbms_transaction.savepoint('b');
+    insert into dbms_tx_t values (9, 'b');
+    call dbms_transaction.rollback_savepoint('a');
+    insert into dbms_tx_t values (10, 'after rollback to a');
+    call dbms_transaction.rollback_savepoint('b');
+ERROR:  savepoint "b" does not exist
+CONTEXT:  SQL statement "SELECT sys.ora_dbms_transaction_rollback_savepoint(sp)"
+PL/iSQL function rollback_savepoint line 18 at PERFORM
+COMMIT;
+select * from dbms_tx_t order by id;
+ id |          val          
+----+-----------------------
+  1 | committed
+  2 | rolled back
+  3 | committed
+  5 | before sp1
+  7 | after rollback to sp1
+ 10 | after rollback to a
+(6 rows)
+
+BEGIN;
+    call dbms_transaction.rollback_savepoint('does_not_exist');
+ERROR:  savepoint "does_not_exist" does not exist
+CONTEXT:  SQL statement "SELECT sys.ora_dbms_transaction_rollback_savepoint(sp)"
+PL/iSQL function rollback_savepoint line 18 at PERFORM
+ROLLBACK;
+--
+-- READ_ONLY / READ_WRITE
+--
+BEGIN;
+    call dbms_transaction.read_only();
+    insert into dbms_tx_t values (11, 'blocked by read only');
+ERROR:  cannot execute INSERT in a read-only transaction
+ROLLBACK;
+-- READ_WRITE as the first statement of a transaction is a no-op that must
+-- not block subsequent writes.  (Switching a transaction back from read-only
+-- to read-write after another statement has already run is a PostgreSQL
+-- restriction -- "transaction read-write mode must be set before any
+-- query" -- so that sequence is intentionally not exercised here.)
+BEGIN;
+    call dbms_transaction.read_write();
+    insert into dbms_tx_t values (12, 'allowed with read_write');
+COMMIT;
+select * from dbms_tx_t where id = 12;
+ id |           val           
+----+-------------------------
+ 12 | allowed with read_write
+(1 row)
+
+--
+-- ISOLATION_LEVEL / LOCAL_TRANSACTION_ID
+--
+select dbms_transaction.isolation_level() from dual;
+ isolation_level 
+-----------------
+ READ COMMITTED
+(1 row)
+
+BEGIN isolation level serializable;
+    select dbms_transaction.isolation_level() from dual;
+ isolation_level 
+-----------------
+ SERIALIZABLE
+(1 row)
+
+COMMIT;
+-- REPEATABLE READ has no Oracle equivalent: Oracle recognizes only READ
+-- COMMITTED and SERIALIZABLE as transaction isolation levels, so this
+-- particular level/result would never be seen against a real Oracle
+-- database.  IvorySQL just passes the PostgreSQL isolation level name
+-- straight through.
+BEGIN isolation level repeatable read;
+    select dbms_transaction.isolation_level() from dual;
+ isolation_level 
+-----------------
+ REPEATABLE READ
+(1 row)
+
+COMMIT;
+select dbms_transaction.local_transaction_id() is null as no_xid_without_create from dual;
+ no_xid_without_create 
+-----------------------
+ t
+(1 row)
+
+BEGIN;
+    select dbms_transaction.local_transaction_id(true) is not null as xid_created from dual;
+ xid_created 
+-------------
+ t
+(1 row)
+
+    select dbms_transaction.local_transaction_id() is not null as xid_now_visible from dual;
+ xid_now_visible 
+-----------------
+ t
+(1 row)
+
+    -- calling again with create_transaction=true on an already-assigned
+    -- transaction just returns the existing id, it does not assign a new one
+    select dbms_transaction.local_transaction_id(true) = dbms_transaction.local_transaction_id() as xid_stable from dual;
+ xid_stable 
+------------
+ t
+(1 row)
+
+COMMIT;
+-- the transaction (and its id) ends with the commit above -- a fresh
+-- transaction has no id again until something assigns one
+select dbms_transaction.local_transaction_id() is null as no_xid_in_new_transaction from dual;
+ no_xid_in_new_transaction 
+---------------------------
+ t
+(1 row)
+
+--
+-- Legacy no-ops
+--
+call dbms_transaction.begin_discrete_transaction();
+call dbms_transaction.use_rollback_segment('rbs1');
+--
+-- Distributed-transaction recovery subprograms: documented as unsupported
+--
+call dbms_transaction.commit_force('1.2.3');
+ERROR:  DBMS_TRANSACTION.COMMIT_FORCE is not supported by IvorySQL; use PostgreSQL's native COMMIT PREPARED instead
+CONTEXT:  PL/iSQL function commit_force line 61 at RAISE
+call dbms_transaction.rollback_force('1.2.3');
+ERROR:  DBMS_TRANSACTION.ROLLBACK_FORCE is not supported by IvorySQL; use PostgreSQL's native ROLLBACK PREPARED instead
+CONTEXT:  PL/iSQL function rollback_force line 67 at RAISE
+call dbms_transaction.commit_comment('c');
+ERROR:  DBMS_TRANSACTION.COMMIT_COMMENT is not supported by IvorySQL
+CONTEXT:  PL/iSQL function commit_comment line 73 at RAISE
+call dbms_transaction.purge_lost_db_entry('1.2.3');
+ERROR:  DBMS_TRANSACTION.PURGE_LOST_DB_ENTRY is not supported by IvorySQL; see pg_prepared_xacts instead
+CONTEXT:  PL/iSQL function purge_lost_db_entry line 79 at RAISE
+call dbms_transaction.purge_mixed('1.2.3');
+ERROR:  DBMS_TRANSACTION.PURGE_MIXED is not supported by IvorySQL; see pg_prepared_xacts instead
+CONTEXT:  PL/iSQL function purge_mixed line 85 at RAISE
+call dbms_transaction.advise_commit('1.2.3');
+ERROR:  DBMS_TRANSACTION.ADVISE_COMMIT is not supported by IvorySQL
+CONTEXT:  PL/iSQL function advise_commit line 91 at RAISE
+call dbms_transaction.advise_rollback('1.2.3');
+ERROR:  DBMS_TRANSACTION.ADVISE_ROLLBACK is not supported by IvorySQL
+CONTEXT:  PL/iSQL function advise_rollback line 97 at RAISE
+call dbms_transaction.advise_nothing('1.2.3');
+ERROR:  DBMS_TRANSACTION.ADVISE_NOTHING is not supported by IvorySQL
+CONTEXT:  PL/iSQL function advise_nothing line 103 at RAISE
+drop table dbms_tx_t;
