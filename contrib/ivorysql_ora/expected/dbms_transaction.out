@@ -3,7 +3,7 @@
 --
 -- tests for DBMS_TRANSACTION:
 --   COMMIT / ROLLBACK, SAVEPOINT / ROLLBACK_SAVEPOINT,
---   READ_ONLY / READ_WRITE, ISOLATION_LEVEL, LOCAL_TRANSACTION_ID,
+--   READ_ONLY / READ_WRITE, LOCAL_TRANSACTION_ID,
 --   legacy no-ops, and the documented-unsupported distributed
 --   transaction recovery subprograms.
 --
@@ -52,7 +52,7 @@ select * from dbms_tx_t order by id;
 --
 call dbms_transaction.savepoint('sp_outside');
 ERROR:  SAVEPOINT can only be used in transaction blocks
-CONTEXT:  SQL statement "SELECT sys.ora_dbms_transaction_savepoint(sp)"
+CONTEXT:  SQL statement "SELECT sys.ora_dbms_transaction_savepoint(savept)"
 PL/iSQL function savepoint line 13 at PERFORM
 -- PG starts transactions explicitly while Oracle starts transactions implicityly
 BEGIN;
@@ -102,7 +102,7 @@ BEGIN;
     insert into dbms_tx_t values (10, 'after rollback to a');
     call dbms_transaction.rollback_savepoint('b');
 ERROR:  savepoint "b" does not exist
-CONTEXT:  SQL statement "SELECT sys.ora_dbms_transaction_rollback_savepoint(sp)"
+CONTEXT:  SQL statement "SELECT sys.ora_dbms_transaction_rollback_savepoint(savept)"
 PL/iSQL function rollback_savepoint line 18 at PERFORM
 COMMIT;
 select * from dbms_tx_t order by id;
@@ -119,15 +119,32 @@ select * from dbms_tx_t order by id;
 BEGIN;
     call dbms_transaction.rollback_savepoint('does_not_exist');
 ERROR:  savepoint "does_not_exist" does not exist
-CONTEXT:  SQL statement "SELECT sys.ora_dbms_transaction_rollback_savepoint(sp)"
+CONTEXT:  SQL statement "SELECT sys.ora_dbms_transaction_rollback_savepoint(savept)"
 PL/iSQL function rollback_savepoint line 18 at PERFORM
 ROLLBACK;
+-- SAVEPOINT/ROLLBACK_SAVEPOINT also accept Oracle's named-parameter call
+-- syntax now that the parameter is named "savept" (matching Oracle's
+-- documented signature) instead of the "sp" name used previously.
+begin;
+insert into dbms_tx_t values (11, 'before named-param savepoint');
+call dbms_transaction.savepoint(savept => 'sp_named');
+insert into dbms_tx_t values (12, 'after named-param savepoint, will be rolled back');
+call dbms_transaction.rollback_savepoint(savept => 'sp_named');
+insert into dbms_tx_t values (13, 'after named-param rollback_savepoint');
+commit;
+select * from dbms_tx_t where id between 11 and 13 order by id;
+ id |                 val                  
+----+--------------------------------------
+ 11 | before named-param savepoint
+ 13 | after named-param rollback_savepoint
+(2 rows)
+
 --
 -- READ_ONLY / READ_WRITE
 --
 BEGIN;
     call dbms_transaction.read_only();
-    insert into dbms_tx_t values (11, 'blocked by read only');
+    insert into dbms_tx_t values (14, 'blocked by read only');
 ERROR:  cannot execute INSERT in a read-only transaction
 ROLLBACK;
 -- READ_WRITE as the first statement of a transaction is a no-op that must
@@ -137,44 +154,15 @@ ROLLBACK;
 -- query" -- so that sequence is intentionally not exercised here.)
 BEGIN;
     call dbms_transaction.read_write();
-    insert into dbms_tx_t values (12, 'allowed with read_write');
+    insert into dbms_tx_t values (15, 'allowed with read_write');
 COMMIT;
-select * from dbms_tx_t where id = 12;
+select * from dbms_tx_t where id = 15;
  id |           val           
 ----+-------------------------
- 12 | allowed with read_write
+ 15 | allowed with read_write
 (1 row)
 
---
--- ISOLATION_LEVEL / LOCAL_TRANSACTION_ID
---
-select dbms_transaction.isolation_level() from dual;
- isolation_level 
------------------
- READ COMMITTED
-(1 row)
-
-BEGIN isolation level serializable;
-    select dbms_transaction.isolation_level() from dual;
- isolation_level 
------------------
- SERIALIZABLE
-(1 row)
-
-COMMIT;
--- REPEATABLE READ has no Oracle equivalent: Oracle recognizes only READ
--- COMMITTED and SERIALIZABLE as transaction isolation levels, so this
--- particular level/result would never be seen against a real Oracle
--- database.  IvorySQL just passes the PostgreSQL isolation level name
--- straight through.
-BEGIN isolation level repeatable read;
-    select dbms_transaction.isolation_level() from dual;
- isolation_level 
------------------
- REPEATABLE READ
-(1 row)
-
-COMMIT;
+-- LOCAL_TRANSACTION_ID
 select dbms_transaction.local_transaction_id() is null as no_xid_without_create from dual;
  no_xid_without_create 
 -----------------------
@@ -216,31 +204,49 @@ select dbms_transaction.local_transaction_id() is null as no_xid_in_new_transact
 --
 call dbms_transaction.begin_discrete_transaction();
 call dbms_transaction.use_rollback_segment('rbs1');
+-- USE_ROLLBACK_SEGMENT also accepts Oracle's named-parameter syntax
+-- ("rb_name", matching Oracle's documented signature, not the
+-- "rollback_segment" name used previously).
+call dbms_transaction.use_rollback_segment(rb_name => 'rbs1');
 --
 -- Distributed-transaction recovery subprograms: documented as unsupported
 --
 call dbms_transaction.commit_force('1.2.3');
 ERROR:  DBMS_TRANSACTION.COMMIT_FORCE is not supported by IvorySQL; use PostgreSQL's native COMMIT PREPARED instead
-CONTEXT:  PL/iSQL function commit_force line 61 at RAISE
+CONTEXT:  PL/iSQL function commit_force line 54 at RAISE
 call dbms_transaction.rollback_force('1.2.3');
 ERROR:  DBMS_TRANSACTION.ROLLBACK_FORCE is not supported by IvorySQL; use PostgreSQL's native ROLLBACK PREPARED instead
-CONTEXT:  PL/iSQL function rollback_force line 67 at RAISE
+CONTEXT:  PL/iSQL function rollback_force line 60 at RAISE
 call dbms_transaction.commit_comment('c');
 ERROR:  DBMS_TRANSACTION.COMMIT_COMMENT is not supported by IvorySQL
-CONTEXT:  PL/iSQL function commit_comment line 73 at RAISE
+CONTEXT:  PL/iSQL function commit_comment line 66 at RAISE
 call dbms_transaction.purge_lost_db_entry('1.2.3');
 ERROR:  DBMS_TRANSACTION.PURGE_LOST_DB_ENTRY is not supported by IvorySQL; see pg_prepared_xacts instead
-CONTEXT:  PL/iSQL function purge_lost_db_entry line 79 at RAISE
+CONTEXT:  PL/iSQL function purge_lost_db_entry line 72 at RAISE
 call dbms_transaction.purge_mixed('1.2.3');
 ERROR:  DBMS_TRANSACTION.PURGE_MIXED is not supported by IvorySQL; see pg_prepared_xacts instead
-CONTEXT:  PL/iSQL function purge_mixed line 85 at RAISE
-call dbms_transaction.advise_commit('1.2.3');
+CONTEXT:  PL/iSQL function purge_mixed line 78 at RAISE
+call dbms_transaction.advise_commit();
 ERROR:  DBMS_TRANSACTION.ADVISE_COMMIT is not supported by IvorySQL
-CONTEXT:  PL/iSQL function advise_commit line 91 at RAISE
-call dbms_transaction.advise_rollback('1.2.3');
+CONTEXT:  PL/iSQL function advise_commit line 84 at RAISE
+call dbms_transaction.advise_rollback();
 ERROR:  DBMS_TRANSACTION.ADVISE_ROLLBACK is not supported by IvorySQL
-CONTEXT:  PL/iSQL function advise_rollback line 97 at RAISE
-call dbms_transaction.advise_nothing('1.2.3');
+CONTEXT:  PL/iSQL function advise_rollback line 90 at RAISE
+call dbms_transaction.advise_nothing();
 ERROR:  DBMS_TRANSACTION.ADVISE_NOTHING is not supported by IvorySQL
-CONTEXT:  PL/iSQL function advise_nothing line 103 at RAISE
+CONTEXT:  PL/iSQL function advise_nothing line 96 at RAISE
+-- COMMIT_FORCE's "scn" parameter is VARCHAR2 (matching Oracle), not NUMBER
+-- as it was before the signature audit; a named-parameter call with a
+-- scn value should reach the same "not supported" error rather than fail
+-- on argument binding/type coercion.
+call dbms_transaction.commit_force(xid => '1.2.3', scn => '12345');
+ERROR:  DBMS_TRANSACTION.COMMIT_FORCE is not supported by IvorySQL; use PostgreSQL's native COMMIT PREPARED instead
+CONTEXT:  PL/iSQL function commit_force line 54 at RAISE
+-- ADVISE_COMMIT/ADVISE_ROLLBACK/ADVISE_NOTHING are no-arg, matching
+-- Oracle's documented signature; calling with an argument should fail
+-- to resolve rather than silently accept a parameter Oracle never had.
+call dbms_transaction.advise_commit('1.2.3');
+ERROR:  wrong number or types of arguments in call to "advise_commit"
+LINE 1: call dbms_transaction.advise_commit('1.2.3');
+             ^
 drop table dbms_tx_t;

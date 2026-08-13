@@ -3,7 +3,7 @@
 --
 -- tests for DBMS_TRANSACTION:
 --   COMMIT / ROLLBACK, SAVEPOINT / ROLLBACK_SAVEPOINT,
---   READ_ONLY / READ_WRITE, ISOLATION_LEVEL, LOCAL_TRANSACTION_ID,
+--   READ_ONLY / READ_WRITE, LOCAL_TRANSACTION_ID,
 --   legacy no-ops, and the documented-unsupported distributed
 --   transaction recovery subprograms.
 --
@@ -77,12 +77,24 @@ BEGIN;
     call dbms_transaction.rollback_savepoint('does_not_exist');
 ROLLBACK;
 
+-- SAVEPOINT/ROLLBACK_SAVEPOINT also accept Oracle's named-parameter call
+-- syntax now that the parameter is named "savept" (matching Oracle's
+-- documented signature) instead of the "sp" name used previously.
+begin;
+insert into dbms_tx_t values (11, 'before named-param savepoint');
+call dbms_transaction.savepoint(savept => 'sp_named');
+insert into dbms_tx_t values (12, 'after named-param savepoint, will be rolled back');
+call dbms_transaction.rollback_savepoint(savept => 'sp_named');
+insert into dbms_tx_t values (13, 'after named-param rollback_savepoint');
+commit;
+select * from dbms_tx_t where id between 11 and 13 order by id;
+
 --
 -- READ_ONLY / READ_WRITE
 --
 BEGIN;
     call dbms_transaction.read_only();
-    insert into dbms_tx_t values (11, 'blocked by read only');
+    insert into dbms_tx_t values (14, 'blocked by read only');
 ROLLBACK;
 
 -- READ_WRITE as the first statement of a transaction is a no-op that must
@@ -92,30 +104,12 @@ ROLLBACK;
 -- query" -- so that sequence is intentionally not exercised here.)
 BEGIN;
     call dbms_transaction.read_write();
-    insert into dbms_tx_t values (12, 'allowed with read_write');
+    insert into dbms_tx_t values (15, 'allowed with read_write');
 COMMIT;
-select * from dbms_tx_t where id = 12;
+select * from dbms_tx_t where id = 15;
 
---
--- ISOLATION_LEVEL / LOCAL_TRANSACTION_ID
---
-select dbms_transaction.isolation_level() from dual;
-
-BEGIN isolation level serializable;
-    select dbms_transaction.isolation_level() from dual;
-COMMIT;
-
--- REPEATABLE READ has no Oracle equivalent: Oracle recognizes only READ
--- COMMITTED and SERIALIZABLE as transaction isolation levels, so this
--- particular level/result would never be seen against a real Oracle
--- database.  IvorySQL just passes the PostgreSQL isolation level name
--- straight through.
-BEGIN isolation level repeatable read;
-    select dbms_transaction.isolation_level() from dual;
-COMMIT;
-
+-- LOCAL_TRANSACTION_ID
 select dbms_transaction.local_transaction_id() is null as no_xid_without_create from dual;
-
 BEGIN;
     select dbms_transaction.local_transaction_id(true) is not null as xid_created from dual;
     select dbms_transaction.local_transaction_id() is not null as xid_now_visible from dual;
@@ -128,13 +122,17 @@ COMMIT;
 -- transaction has no id again until something assigns one
 select dbms_transaction.local_transaction_id() is null as no_xid_in_new_transaction from dual;
 
-
-
 --
 -- Legacy no-ops
 --
 call dbms_transaction.begin_discrete_transaction();
 call dbms_transaction.use_rollback_segment('rbs1');
+
+-- USE_ROLLBACK_SEGMENT also accepts Oracle's named-parameter syntax
+-- ("rb_name", matching Oracle's documented signature, not the
+-- "rollback_segment" name used previously).
+call dbms_transaction.use_rollback_segment(rb_name => 'rbs1');
+
 
 --
 -- Distributed-transaction recovery subprograms: documented as unsupported
@@ -144,8 +142,19 @@ call dbms_transaction.rollback_force('1.2.3');
 call dbms_transaction.commit_comment('c');
 call dbms_transaction.purge_lost_db_entry('1.2.3');
 call dbms_transaction.purge_mixed('1.2.3');
+call dbms_transaction.advise_commit();
+call dbms_transaction.advise_rollback();
+call dbms_transaction.advise_nothing();
+
+-- COMMIT_FORCE's "scn" parameter is VARCHAR2 (matching Oracle), not NUMBER
+-- as it was before the signature audit; a named-parameter call with a
+-- scn value should reach the same "not supported" error rather than fail
+-- on argument binding/type coercion.
+call dbms_transaction.commit_force(xid => '1.2.3', scn => '12345');
+
+-- ADVISE_COMMIT/ADVISE_ROLLBACK/ADVISE_NOTHING are no-arg, matching
+-- Oracle's documented signature; calling with an argument should fail
+-- to resolve rather than silently accept a parameter Oracle never had.
 call dbms_transaction.advise_commit('1.2.3');
-call dbms_transaction.advise_rollback('1.2.3');
-call dbms_transaction.advise_nothing('1.2.3');
 
 drop table dbms_tx_t;

@@ -52,37 +52,36 @@ LANGUAGE C VOLATILE;
 
 CREATE OR REPLACE PACKAGE dbms_transaction IS
 
-    PROCEDURE commit(comment IN VARCHAR2 DEFAULT NULL);
+    PROCEDURE commit;
     PROCEDURE rollback;
-    PROCEDURE savepoint(sp IN VARCHAR2);
-    PROCEDURE rollback_savepoint(sp IN VARCHAR2);
+    PROCEDURE savepoint(savept IN VARCHAR2);
+    PROCEDURE rollback_savepoint(savept IN VARCHAR2);
 
     PROCEDURE read_only;
     PROCEDURE read_write;
-    FUNCTION isolation_level RETURN VARCHAR2;
     FUNCTION local_transaction_id(create_transaction IN BOOLEAN DEFAULT FALSE) RETURN VARCHAR2;
 
     -- Legacy no-ops: Oracle itself documents these as having no effect in
     -- current releases (discrete-transaction hint / explicit rollback
     -- segments, both obsoleted by automatic undo management).
     PROCEDURE begin_discrete_transaction;
-    PROCEDURE use_rollback_segment(rollback_segment IN VARCHAR2);
+    PROCEDURE use_rollback_segment(rb_name IN VARCHAR2);
 
     -- Distributed transaction (two-phase commit) recovery: not supported.
-    PROCEDURE commit_force(xid IN VARCHAR2, scn IN NUMBER DEFAULT NULL);
+    PROCEDURE commit_force(xid IN VARCHAR2, scn IN VARCHAR2 DEFAULT NULL);
     PROCEDURE rollback_force(xid IN VARCHAR2);
     PROCEDURE commit_comment(cmnt IN VARCHAR2);
     PROCEDURE purge_lost_db_entry(xid IN VARCHAR2);
     PROCEDURE purge_mixed(xid IN VARCHAR2);
-    PROCEDURE advise_commit(xid IN VARCHAR2);
-    PROCEDURE advise_rollback(xid IN VARCHAR2);
-    PROCEDURE advise_nothing(xid IN VARCHAR2);
+    PROCEDURE advise_commit;
+    PROCEDURE advise_rollback;
+    PROCEDURE advise_nothing;
 
 END dbms_transaction;
 
 CREATE OR REPLACE PACKAGE BODY dbms_transaction IS
 
-    PROCEDURE commit(comment IN VARCHAR2 DEFAULT NULL) IS
+    PROCEDURE commit IS
     BEGIN
         COMMIT;
     END;
@@ -92,14 +91,14 @@ CREATE OR REPLACE PACKAGE BODY dbms_transaction IS
         ROLLBACK;
     END;
 
-    PROCEDURE savepoint(sp IN VARCHAR2) IS
+    PROCEDURE savepoint(savept IN VARCHAR2) IS
     BEGIN
-        PERFORM sys.ora_dbms_transaction_savepoint(sp);
+        PERFORM sys.ora_dbms_transaction_savepoint(savept);
     END;
 
-    PROCEDURE rollback_savepoint(sp IN VARCHAR2) IS
+    PROCEDURE rollback_savepoint(savept IN VARCHAR2) IS
     BEGIN
-        PERFORM sys.ora_dbms_transaction_rollback_savepoint(sp);
+        PERFORM sys.ora_dbms_transaction_rollback_savepoint(savept);
     END;
 
     PROCEDURE read_only IS
@@ -110,13 +109,6 @@ CREATE OR REPLACE PACKAGE BODY dbms_transaction IS
     PROCEDURE read_write IS
     BEGIN
         EXECUTE 'SET TRANSACTION READ WRITE';
-    END;
-
-    FUNCTION isolation_level RETURN VARCHAR2 IS
-        lvl VARCHAR2(32);
-    BEGIN
-        SELECT upper(current_setting('transaction_isolation')) INTO lvl;
-        RETURN lvl;
     END;
 
     FUNCTION local_transaction_id(create_transaction IN BOOLEAN DEFAULT FALSE) RETURN VARCHAR2 IS
@@ -135,12 +127,12 @@ CREATE OR REPLACE PACKAGE BODY dbms_transaction IS
         NULL;
     END;
 
-    PROCEDURE use_rollback_segment(rollback_segment IN VARCHAR2) IS
+    PROCEDURE use_rollback_segment(rb_name IN VARCHAR2) IS
     BEGIN
         NULL;
     END;
 
-    PROCEDURE commit_force(xid IN VARCHAR2, scn IN NUMBER DEFAULT NULL) IS
+    PROCEDURE commit_force(xid IN VARCHAR2, scn IN VARCHAR2 DEFAULT NULL) IS
     BEGIN
         RAISE EXCEPTION 'DBMS_TRANSACTION.COMMIT_FORCE is not supported by IvorySQL; use PostgreSQL''s native COMMIT PREPARED instead'
             USING ERRCODE = 'feature_not_supported';
@@ -170,19 +162,19 @@ CREATE OR REPLACE PACKAGE BODY dbms_transaction IS
             USING ERRCODE = 'feature_not_supported';
     END;
 
-    PROCEDURE advise_commit(xid IN VARCHAR2) IS
+    PROCEDURE advise_commit IS
     BEGIN
         RAISE EXCEPTION 'DBMS_TRANSACTION.ADVISE_COMMIT is not supported by IvorySQL'
             USING ERRCODE = 'feature_not_supported';
     END;
 
-    PROCEDURE advise_rollback(xid IN VARCHAR2) IS
+    PROCEDURE advise_rollback IS
     BEGIN
         RAISE EXCEPTION 'DBMS_TRANSACTION.ADVISE_ROLLBACK is not supported by IvorySQL'
             USING ERRCODE = 'feature_not_supported';
     END;
 
-    PROCEDURE advise_nothing(xid IN VARCHAR2) IS
+    PROCEDURE advise_nothing IS
     BEGIN
         RAISE EXCEPTION 'DBMS_TRANSACTION.ADVISE_NOTHING is not supported by IvorySQL'
             USING ERRCODE = 'feature_not_supported';
