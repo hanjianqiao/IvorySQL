@@ -428,64 +428,6 @@ SPI_rollback_and_chain(void)
 }
 
 /*
- * SPI_savepoint, SPI_release_savepoint, SPI_rollback_to_savepoint
- *
- * Unlike SPI_commit/SPI_rollback, these do not terminate the current
- * top-level transaction: they mark the transaction state so that the
- * subtransaction is started/ended when control returns to
- * CommitTransactionCommand() at the end of the current top-level command
- * (exactly as happens for a plain SQL SAVEPOINT/RELEASE SAVEPOINT/ROLLBACK TO
- * SAVEPOINT statement).  Hence no PG_TRY/StartTransactionCommand dance is
- * needed here, unlike _SPI_commit/_SPI_rollback.
- *
- * Unlike SPI_commit/SPI_rollback, we deliberately do NOT reject calls made
- * from an "atomic" SPI connection.  That check exists there to keep a CALL
- * from terminating a transaction the client explicitly opened with BEGIN;
- * it has nothing to do with savepoints, which never terminate the top-level
- * transaction.  In fact requiring atomic==false here would be actively
- * wrong: per PostgreSQL's CallStmt rules, a procedure invoked via a
- * top-level CALL is non-atomic only when that CALL is *not* itself inside an
- * explicit transaction block -- but RequireTransactionBlock() below demands
- * the opposite (an explicit transaction block must already be open).  The
- * two conditions can never hold at once, so an atomic check here would make
- * SAVEPOINT impossible to use from any procedure.  The only guard that
- * matters is not dereferencing an absent SPI connection.
- */
-void
-SPI_savepoint(const char *name)
-{
-	if (_SPI_current == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TRANSACTION_TERMINATION),
-				 errmsg("invalid transaction termination")));
-
-	RequireTransactionBlock(true, "SAVEPOINT");
-	DefineSavepoint(name);
-}
-
-void
-SPI_release_savepoint(const char *name)
-{
-	if (_SPI_current == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TRANSACTION_TERMINATION),
-				 errmsg("invalid transaction termination")));
-
-	ReleaseSavepoint(name);
-}
-
-void
-SPI_rollback_to_savepoint(const char *name)
-{
-	if (_SPI_current == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TRANSACTION_TERMINATION),
-				 errmsg("invalid transaction termination")));
-
-	RollbackToSavepoint(name);
-}
-
-/*
  * Clean up SPI state at transaction commit or abort.
  */
 void

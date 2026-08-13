@@ -20,8 +20,21 @@
  * PL/iSQL wrappers (see dbms_transaction--1.0.sql) around statements the
  * language already supports natively.  Only the named-savepoint operations
  * need a C-level bridge, because PL/iSQL has no SAVEPOINT/ROLLBACK TO
- * SAVEPOINT statement of its own; these call the SPI_savepoint() family
- * added to spi.c for this purpose.
+ * SAVEPOINT statement of its own.
+ *
+ * These bridge functions call DefineSavepoint()/RollbackToSavepoint()
+ * (declared in access/xact.h) directly rather than going through SPI.
+ * Unlike SPI_commit()/SPI_rollback(), a savepoint operation never
+ * terminates the current top-level transaction -- it only marks the
+ * transaction state so a subtransaction is started/ended when control
+ * returns to CommitTransactionCommand() at the end of the current
+ * top-level command, exactly as happens for a plain SQL SAVEPOINT /
+ * ROLLBACK TO SAVEPOINT statement.  That means none of SPI's machinery
+ * (connection stack, atomic-context checks, the PG_TRY/
+ * StartTransactionCommand dance SPI_commit()/SPI_rollback() need) is
+ * relevant here, so there is nothing to gain from routing through SPI --
+ * standard_ProcessUtility() calls these same xact.c functions directly
+ * for a plain SQL SAVEPOINT statement, and this bridge does the same.
  *
  * Portions Copyright (c) 2025-2026, IvorySQL Global Development Team
  *
@@ -31,8 +44,8 @@
  */
 #include "postgres.h"
 
+#include "access/xact.h"
 #include "fmgr.h"
-#include "executor/spi.h"
 #include "utils/builtins.h"
 
 /*
@@ -69,16 +82,18 @@ get_savepoint_name(FunctionCallInfo fcinfo)
 /*
  * DBMS_TRANSACTION.SAVEPOINT(name)
  *
- * Establishes a named savepoint in the current transaction.  Only valid when
- * called from a non-atomic context (a top-level CALL to a procedure), same
- * restriction as COMMIT/ROLLBACK.
+ * Establishes a named savepoint in the current transaction.  Requires an
+ * explicit transaction block to already be open, same as a bare SQL
+ * SAVEPOINT statement -- unlike COMMIT/ROLLBACK, this has nothing to do
+ * with atomic vs. non-atomic CALL context.
  */
 Datum
 ora_dbms_transaction_savepoint(PG_FUNCTION_ARGS)
 {
 	char	   *name = get_savepoint_name(fcinfo);
 
-	SPI_savepoint(name);
+	RequireTransactionBlock(true, "SAVEPOINT");
+	DefineSavepoint(name);
 
 	PG_RETURN_VOID();
 }
@@ -94,7 +109,7 @@ ora_dbms_transaction_rollback_savepoint(PG_FUNCTION_ARGS)
 {
 	char	   *name = get_savepoint_name(fcinfo);
 
-	SPI_rollback_to_savepoint(name);
+	RollbackToSavepoint(name);
 
 	PG_RETURN_VOID();
 }

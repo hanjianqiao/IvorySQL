@@ -20,9 +20,10 @@
  * COMMIT/ROLLBACK reuse PL/iSQL's native COMMIT/ROLLBACK statements (only
  * valid when the package procedure is invoked as a top-level CALL, exactly
  * like a bare COMMIT/ROLLBACK would be).  SAVEPOINT/ROLLBACK_SAVEPOINT call
- * into the C-level SPI_savepoint() family added for this package, since
- * PL/iSQL has no native savepoint statement.  READ_ONLY/READ_WRITE and the
- * metadata readers are thin wrappers around existing SQL facilities.
+ * into a small C bridge (dbms_transaction.c) that reaches directly into
+ * PostgreSQL's DefineSavepoint()/RollbackToSavepoint(), since PL/iSQL has no
+ * native savepoint statement.  READ_ONLY/READ_WRITE and the metadata readers
+ * are thin wrappers around existing SQL facilities.
  *
  * The distributed-transaction recovery subprograms (ADVISE_*, COMMIT_FORCE,
  * ROLLBACK_FORCE, COMMIT_COMMENT, PURGE_LOST_DB_ENTRY, PURGE_MIXED) exist in
