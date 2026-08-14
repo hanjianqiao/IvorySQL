@@ -249,4 +249,141 @@ call dbms_transaction.advise_commit('1.2.3');
 ERROR:  wrong number or types of arguments in call to "advise_commit"
 LINE 1: call dbms_transaction.advise_commit('1.2.3');
              ^
+--
+-- SAVEPOINT / ROLLBACK_SAVEPOINT: additional boundary conditions
+--
+-- NULL savepoint name is rejected explicitly by the C bridge, for both
+-- SAVEPOINT and ROLLBACK_SAVEPOINT.
+begin;
+call dbms_transaction.savepoint(NULL);
+ERROR:  DBMS_TRANSACTION savepoint name must not be NULL
+CONTEXT:  SQL statement "SELECT sys.ora_dbms_transaction_savepoint(savept)"
+PL/iSQL function savepoint line 13 at PERFORM
+rollback;
+begin;
+call dbms_transaction.rollback_savepoint(NULL);
+ERROR:  DBMS_TRANSACTION savepoint name must not be NULL
+CONTEXT:  SQL statement "SELECT sys.ora_dbms_transaction_rollback_savepoint(savept)"
+PL/iSQL function rollback_savepoint line 18 at PERFORM
+rollback;
+-- savepoint name length boundary: 255 bytes is accepted, 256 is rejected
+-- (DBMS_TRANSACTION_SAVEPOINT_NAME_LEN in dbms_transaction.c is 256, so the
+-- longest accepted name is 255 bytes).
+begin;
+call dbms_transaction.savepoint(repeat('x', 255));
+call dbms_transaction.rollback_savepoint(repeat('x', 255));
+rollback;
+begin;
+call dbms_transaction.savepoint(repeat('x', 256));
+ERROR:  DBMS_TRANSACTION savepoint name too long (max 255 bytes)
+CONTEXT:  SQL statement "SELECT sys.ora_dbms_transaction_savepoint(savept)"
+PL/iSQL function savepoint line 13 at PERFORM
+rollback;
+-- an empty-string savepoint name hits the same "must not be NULL" error as
+-- an explicit NULL: VARCHAR2 treats '' as NULL, and savept is declared
+-- VARCHAR2, so the C bridge never sees a non-NULL empty string here.
+begin;
+call dbms_transaction.savepoint('');
+ERROR:  DBMS_TRANSACTION savepoint name must not be NULL
+CONTEXT:  SQL statement "SELECT sys.ora_dbms_transaction_savepoint(savept)"
+PL/iSQL function savepoint line 13 at PERFORM
+rollback;
+-- redefining the same savepoint name rolls back to the most recently
+-- defined one, matching plain SQL SAVEPOINT semantics -- the first
+-- definition's row is unaffected, only the row inserted after the second
+-- "a" is undone.
+begin;
+insert into dbms_tx_t values (20, 'before first a');
+call dbms_transaction.savepoint('a');
+insert into dbms_tx_t values (21, 'after first a');
+call dbms_transaction.savepoint('a');
+insert into dbms_tx_t values (22, 'after second a, will be rolled back');
+call dbms_transaction.rollback_savepoint('a');
+commit;
+select * from dbms_tx_t where id between 20 and 22 order by id;
+ id |      val       
+----+----------------
+ 20 | before first a
+ 21 | after first a
+(2 rows)
+
+-- rolling back to the same savepoint repeatedly is allowed each time --
+-- ROLLBACK_SAVEPOINT does not release/consume the savepoint, so it can be
+-- targeted again.
+begin;
+call dbms_transaction.savepoint('rep');
+insert into dbms_tx_t values (23, 'first attempt, will be rolled back');
+call dbms_transaction.rollback_savepoint('rep');
+insert into dbms_tx_t values (23, 'second attempt, will also be rolled back');
+call dbms_transaction.rollback_savepoint('rep');
+commit;
+select * from dbms_tx_t where id = 23;
+ id | val 
+----+-----
+(0 rows)
+
+-- ROLLBACK_SAVEPOINT called entirely outside a transaction block (no
+-- enclosing BEGIN at all, unlike the "does_not_exist" case above which was
+-- inside an explicit BEGIN) must raise the same kind of ordinary error as
+-- ROLLBACK TO SAVEPOINT would, not crash the backend.
+call dbms_transaction.rollback_savepoint('never_defined');
+ERROR:  ROLLBACK TO SAVEPOINT can only be used in transaction blocks
+CONTEXT:  SQL statement "SELECT sys.ora_dbms_transaction_rollback_savepoint(savept)"
+PL/iSQL function rollback_savepoint line 18 at PERFORM
+-- savepoint names are opaque text, not SQL identifiers -- whitespace is
+-- accepted without quoting games.
+begin;
+call dbms_transaction.savepoint('sp with space');
+insert into dbms_tx_t values (24, 'will be rolled back');
+call dbms_transaction.rollback_savepoint('sp with space');
+commit;
+select * from dbms_tx_t where id = 24;
+ id | val 
+----+-----
+(0 rows)
+
+--
+-- READ_ONLY / READ_WRITE: switching modes within one transaction
+--
+-- switching from read-only back to read-write in the same transaction hits
+-- PostgreSQL's "must be set before any query" restriction, because
+-- READ_ONLY's own SET TRANSACTION READ ONLY already counts as a query.
+begin;
+call dbms_transaction.read_only();
+call dbms_transaction.read_write();
+ERROR:  transaction read-write mode must be set before any query
+CONTEXT:  SQL statement "SET TRANSACTION READ WRITE"
+PL/iSQL function read_write line 28 at EXECUTE
+rollback;
+-- the reverse direction -- read-write down to read-only -- is always
+-- allowed, since it only narrows what the transaction can do.
+begin;
+call dbms_transaction.read_write();
+call dbms_transaction.read_only();
+select current_setting('transaction_read_only');
+ current_setting 
+-----------------
+ on
+(1 row)
+
+rollback;
+--
+-- COMMIT/ROLLBACK: atomic context (nested inside another procedure's CALL)
+--
+-- COMMIT/ROLLBACK are only valid as the top-level CALL; invoking them from
+-- inside a procedure that is itself being CALLed (so the whole thing runs
+-- atomically) must raise an error instead of silently no-op'ing.
+create or replace procedure dbms_tx_wrapper_commit() as
+begin
+    dbms_transaction.commit();
+end;
+/
+begin;
+call dbms_tx_wrapper_commit();
+ERROR:  invalid transaction termination
+CONTEXT:  PL/iSQL function commit line 3 at COMMIT
+SQL statement "CALL dbms_transaction.commit()"
+PL/iSQL function dbms_tx_wrapper_commit() line 2 at CALL
+rollback;
+drop procedure dbms_tx_wrapper_commit();
 drop table dbms_tx_t;

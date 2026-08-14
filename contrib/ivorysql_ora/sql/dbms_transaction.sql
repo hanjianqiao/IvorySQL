@@ -157,4 +157,113 @@ call dbms_transaction.commit_force(xid => '1.2.3', scn => '12345');
 -- to resolve rather than silently accept a parameter Oracle never had.
 call dbms_transaction.advise_commit('1.2.3');
 
+--
+-- SAVEPOINT / ROLLBACK_SAVEPOINT: additional boundary conditions
+--
+
+-- NULL savepoint name is rejected explicitly by the C bridge, for both
+-- SAVEPOINT and ROLLBACK_SAVEPOINT.
+begin;
+call dbms_transaction.savepoint(NULL);
+rollback;
+begin;
+call dbms_transaction.rollback_savepoint(NULL);
+rollback;
+
+-- savepoint name length boundary: 255 bytes is accepted, 256 is rejected
+-- (DBMS_TRANSACTION_SAVEPOINT_NAME_LEN in dbms_transaction.c is 256, so the
+-- longest accepted name is 255 bytes).
+begin;
+call dbms_transaction.savepoint(repeat('x', 255));
+call dbms_transaction.rollback_savepoint(repeat('x', 255));
+rollback;
+begin;
+call dbms_transaction.savepoint(repeat('x', 256));
+rollback;
+
+-- an empty-string savepoint name hits the same "must not be NULL" error as
+-- an explicit NULL: VARCHAR2 treats '' as NULL, and savept is declared
+-- VARCHAR2, so the C bridge never sees a non-NULL empty string here.
+begin;
+call dbms_transaction.savepoint('');
+rollback;
+
+-- redefining the same savepoint name rolls back to the most recently
+-- defined one, matching plain SQL SAVEPOINT semantics -- the first
+-- definition's row is unaffected, only the row inserted after the second
+-- "a" is undone.
+begin;
+insert into dbms_tx_t values (20, 'before first a');
+call dbms_transaction.savepoint('a');
+insert into dbms_tx_t values (21, 'after first a');
+call dbms_transaction.savepoint('a');
+insert into dbms_tx_t values (22, 'after second a, will be rolled back');
+call dbms_transaction.rollback_savepoint('a');
+commit;
+select * from dbms_tx_t where id between 20 and 22 order by id;
+
+-- rolling back to the same savepoint repeatedly is allowed each time --
+-- ROLLBACK_SAVEPOINT does not release/consume the savepoint, so it can be
+-- targeted again.
+begin;
+call dbms_transaction.savepoint('rep');
+insert into dbms_tx_t values (23, 'first attempt, will be rolled back');
+call dbms_transaction.rollback_savepoint('rep');
+insert into dbms_tx_t values (23, 'second attempt, will also be rolled back');
+call dbms_transaction.rollback_savepoint('rep');
+commit;
+select * from dbms_tx_t where id = 23;
+
+-- ROLLBACK_SAVEPOINT called entirely outside a transaction block (no
+-- enclosing BEGIN at all, unlike the "does_not_exist" case above which was
+-- inside an explicit BEGIN) must raise the same kind of ordinary error as
+-- ROLLBACK TO SAVEPOINT would, not crash the backend.
+call dbms_transaction.rollback_savepoint('never_defined');
+
+-- savepoint names are opaque text, not SQL identifiers -- whitespace is
+-- accepted without quoting games.
+begin;
+call dbms_transaction.savepoint('sp with space');
+insert into dbms_tx_t values (24, 'will be rolled back');
+call dbms_transaction.rollback_savepoint('sp with space');
+commit;
+select * from dbms_tx_t where id = 24;
+
+--
+-- READ_ONLY / READ_WRITE: switching modes within one transaction
+--
+
+-- switching from read-only back to read-write in the same transaction hits
+-- PostgreSQL's "must be set before any query" restriction, because
+-- READ_ONLY's own SET TRANSACTION READ ONLY already counts as a query.
+begin;
+call dbms_transaction.read_only();
+call dbms_transaction.read_write();
+rollback;
+
+-- the reverse direction -- read-write down to read-only -- is always
+-- allowed, since it only narrows what the transaction can do.
+begin;
+call dbms_transaction.read_write();
+call dbms_transaction.read_only();
+select current_setting('transaction_read_only');
+rollback;
+
+--
+-- COMMIT/ROLLBACK: atomic context (nested inside another procedure's CALL)
+--
+
+-- COMMIT/ROLLBACK are only valid as the top-level CALL; invoking them from
+-- inside a procedure that is itself being CALLed (so the whole thing runs
+-- atomically) must raise an error instead of silently no-op'ing.
+create or replace procedure dbms_tx_wrapper_commit() as
+begin
+    dbms_transaction.commit();
+end;
+/
+begin;
+call dbms_tx_wrapper_commit();
+rollback;
+drop procedure dbms_tx_wrapper_commit();
+
 drop table dbms_tx_t;

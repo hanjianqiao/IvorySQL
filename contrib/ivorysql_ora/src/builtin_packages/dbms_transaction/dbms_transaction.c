@@ -102,13 +102,21 @@ ora_dbms_transaction_savepoint(PG_FUNCTION_ARGS)
  * DBMS_TRANSACTION.ROLLBACK_SAVEPOINT(name)
  *
  * Rolls back to a previously established savepoint without ending the
- * transaction.
+ * transaction.  Requires an explicit transaction block for the same reason
+ * SAVEPOINT does: RollbackToSavepoint() asserts the transaction state is
+ * already TBLOCK_INPROGRESS (or a subtransaction thereof), which is only
+ * true once a transaction block has been started.  Without this guard,
+ * calling ROLLBACK_SAVEPOINT as a standalone top-level statement hits that
+ * state-machine assertion and crashes the backend instead of raising a
+ * normal error -- standard_ProcessUtility() guards the equivalent plain SQL
+ * ROLLBACK TO SAVEPOINT statement the same way.
  */
 Datum
 ora_dbms_transaction_rollback_savepoint(PG_FUNCTION_ARGS)
 {
 	char	   *name = get_savepoint_name(fcinfo);
 
+	RequireTransactionBlock(true, "ROLLBACK TO SAVEPOINT");
 	RollbackToSavepoint(name);
 
 	PG_RETURN_VOID();
