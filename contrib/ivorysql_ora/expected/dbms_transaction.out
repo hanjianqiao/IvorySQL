@@ -386,4 +386,84 @@ SQL statement "CALL dbms_transaction.commit()"
 PL/iSQL function dbms_tx_wrapper_commit() line 2 at CALL
 rollback;
 drop procedure dbms_tx_wrapper_commit();
+--
+-- Cross-user execution: the package must be callable by any role, not just
+-- the owner/superuser that ran CREATE EXTENSION, and it must run with the
+-- caller's own privileges (AUTHID CURRENT_USER) rather than the package
+-- owner's -- this is what Oracle's own documentation for DBMS_TRANSACTION
+-- promises ("all subprograms ... run with the privileges of the calling
+-- user, rather than the package owner SYS").
+--
+create role dbms_tx_other_user login;
+create table dbms_tx_other_user_t (id int);
+grant all on dbms_tx_other_user_t to dbms_tx_other_user;
+set session authorization dbms_tx_other_user;
+select current_user;
+    current_user    
+--------------------
+ dbms_tx_other_user
+(1 row)
+
+-- no explicit GRANT needed: EXECUTE on the package is granted to PUBLIC
+-- when dbms_transaction is installed
+call dbms_transaction.begin_discrete_transaction();
+select dbms_transaction.local_transaction_id() is null as no_xid_without_create;
+ no_xid_without_create 
+-----------------------
+ t
+(1 row)
+
+begin;
+select dbms_transaction.local_transaction_id(true) is not null as xid_created;
+ xid_created 
+-------------
+ t
+(1 row)
+
+call dbms_transaction.savepoint('other_user_sp');
+call dbms_transaction.rollback_savepoint('other_user_sp');
+commit;
+-- COMMIT/ROLLBACK also work for a non-owner role, same as for the owner
+insert into dbms_tx_other_user_t values (1);
+call dbms_transaction.commit();
+insert into dbms_tx_other_user_t values (2);
+call dbms_transaction.rollback();
+select * from dbms_tx_other_user_t order by id;
+ id 
+----
+  1
+  2
+(2 rows)
+
+-- READ_ONLY/READ_WRITE also work for a non-owner role
+begin;
+call dbms_transaction.read_only();
+insert into dbms_tx_other_user_t values (3);
+ERROR:  cannot execute INSERT in a read-only transaction
+rollback;
+begin;
+call dbms_transaction.read_write();
+insert into dbms_tx_other_user_t values (4);
+commit;
+select * from dbms_tx_other_user_t order by id;
+ id 
+----
+  1
+  2
+  4
+(3 rows)
+
+-- the unsupported distributed-transaction subprograms must still be
+-- reachable (not blocked by the package-level ACL) and still raise
+-- feature_not_supported for a non-owner role, exactly as they do for the
+-- owner -- the ACL/AUTHID fix must not accidentally change this error path
+call dbms_transaction.commit_force('1.2.3');
+ERROR:  DBMS_TRANSACTION.COMMIT_FORCE is not supported by IvorySQL; use PostgreSQL's native COMMIT PREPARED instead
+CONTEXT:  PL/iSQL function commit_force line 54 at RAISE
+call dbms_transaction.advise_commit();
+ERROR:  DBMS_TRANSACTION.ADVISE_COMMIT is not supported by IvorySQL
+CONTEXT:  PL/iSQL function advise_commit line 84 at RAISE
+reset session authorization;
+drop table dbms_tx_other_user_t;
+drop role dbms_tx_other_user;
 drop table dbms_tx_t;

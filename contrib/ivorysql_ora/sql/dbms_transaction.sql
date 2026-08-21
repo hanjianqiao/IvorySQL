@@ -266,4 +266,60 @@ call dbms_tx_wrapper_commit();
 rollback;
 drop procedure dbms_tx_wrapper_commit();
 
+--
+-- Cross-user execution: the package must be callable by any role, not just
+-- the owner/superuser that ran CREATE EXTENSION, and it must run with the
+-- caller's own privileges (AUTHID CURRENT_USER) rather than the package
+-- owner's -- this is what Oracle's own documentation for DBMS_TRANSACTION
+-- promises ("all subprograms ... run with the privileges of the calling
+-- user, rather than the package owner SYS").
+--
+create role dbms_tx_other_user login;
+create table dbms_tx_other_user_t (id int);
+grant all on dbms_tx_other_user_t to dbms_tx_other_user;
+
+set session authorization dbms_tx_other_user;
+select current_user;
+
+-- no explicit GRANT needed: EXECUTE on the package is granted to PUBLIC
+-- when dbms_transaction is installed
+call dbms_transaction.begin_discrete_transaction();
+select dbms_transaction.local_transaction_id() is null as no_xid_without_create;
+
+begin;
+select dbms_transaction.local_transaction_id(true) is not null as xid_created;
+call dbms_transaction.savepoint('other_user_sp');
+call dbms_transaction.rollback_savepoint('other_user_sp');
+commit;
+
+-- COMMIT/ROLLBACK also work for a non-owner role, same as for the owner
+insert into dbms_tx_other_user_t values (1);
+call dbms_transaction.commit();
+insert into dbms_tx_other_user_t values (2);
+call dbms_transaction.rollback();
+select * from dbms_tx_other_user_t order by id;
+
+-- READ_ONLY/READ_WRITE also work for a non-owner role
+begin;
+call dbms_transaction.read_only();
+insert into dbms_tx_other_user_t values (3);
+rollback;
+
+begin;
+call dbms_transaction.read_write();
+insert into dbms_tx_other_user_t values (4);
+commit;
+select * from dbms_tx_other_user_t order by id;
+
+-- the unsupported distributed-transaction subprograms must still be
+-- reachable (not blocked by the package-level ACL) and still raise
+-- feature_not_supported for a non-owner role, exactly as they do for the
+-- owner -- the ACL/AUTHID fix must not accidentally change this error path
+call dbms_transaction.commit_force('1.2.3');
+call dbms_transaction.advise_commit();
+
+reset session authorization;
+drop table dbms_tx_other_user_t;
+drop role dbms_tx_other_user;
+
 drop table dbms_tx_t;

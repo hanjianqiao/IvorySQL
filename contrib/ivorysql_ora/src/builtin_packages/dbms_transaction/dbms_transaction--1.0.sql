@@ -34,6 +34,14 @@
  * PREPARE TRANSACTION / COMMIT PREPARED / ROLLBACK PREPARED and
  * pg_prepared_xacts instead.
  *
+ * AUTHID CURRENT_USER: Oracle's own documentation for DBMS_TRANSACTION says
+ * "All subprograms in the DBMS_TRANSACTION package run with the privileges
+ * of the calling user, rather than the package owner SYS" -- i.e. invoker's
+ * rights, not the CREATE PACKAGE default of definer's rights.  EXECUTE is
+ * also granted to PUBLIC below, matching Oracle's catalog scripts granting
+ * SYS.DBMS_TRANSACTION to PUBLIC at database creation, so that ordinary
+ * users can call it without a DBA having to GRANT it per-role first.
+ *
  * contrib/ivorysql_ora/src/builtin_packages/dbms_transaction/dbms_transaction--1.0.sql
  *
  *-------------------------------------------------------------------------
@@ -50,7 +58,7 @@ RETURNS VOID
 AS 'MODULE_PATHNAME', 'ora_dbms_transaction_rollback_savepoint'
 LANGUAGE C VOLATILE;
 
-CREATE OR REPLACE PACKAGE dbms_transaction IS
+CREATE OR REPLACE PACKAGE dbms_transaction AUTHID CURRENT_USER IS
 
     PROCEDURE commit;
     PROCEDURE rollback;
@@ -181,3 +189,8 @@ CREATE OR REPLACE PACKAGE BODY dbms_transaction IS
     END;
 
 END dbms_transaction;
+
+-- Packages default to no PUBLIC privileges at all (unlike plain FUNCTION/
+-- PROCEDURE, which grant EXECUTE to PUBLIC by default) -- without this,
+-- only the role that ran CREATE EXTENSION could call any subprogram here.
+GRANT EXECUTE ON PACKAGE dbms_transaction TO PUBLIC;
